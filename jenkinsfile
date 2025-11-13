@@ -1,0 +1,212 @@
+pipeline {
+    agent any
+    
+    tools {
+        maven 'Maven-3.8.6'
+        nodejs 'Node-18'
+        dockerTool 'Docker-Latest'
+    }
+    
+    environment {
+        DOCKER_REGISTRY = 'your-registry.com'
+        IMAGE_TAG = "${BUILD_NUMBER}"
+        WEATHER_API_KEY = credentials('weather-api-key')
+        SONAR_TOKEN = credentials('sonar-token')
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    env.GIT_COMMIT_HASH = sh(script: "git rev-parse HEAD", returnStdout: true).trim()
+                }
+            }
+        }
+        
+        stage('Backend - Test & Build') {
+            steps {
+                dir('backend') {
+                    sh 'mvn clean compile'
+                    sh 'mvn test'
+                    sh 'mvn jacoco:report'
+                    sh 'mvn package -DskipTests'
+                }
+                
+                publishHTML([
+                    allowMissing: false,
+                    alwaysLinkToLastBuild: true,
+                    keepAll: true,
+                    reportDir: 'backend/target/site/jacoco',
+                    reportFiles: 'index.html',
+                    reportName: 'Backend Coverage Report'
+                ])
+            }
+        }
+        
+        stage('Frontend - Test & Build') {
+            steps {
+                dir('frontend') {
+                    sh 'npm ci'
+                    sh 'npm run lint'
+                    sh 'npm run test -- --watch=false --browsers=ChromeHeadless --code-coverage'
+                    sh 'npm run build --prod'
+                }
+                
+                publishHTML([
+                    allowMissing: false,
+                    alwaysLinkToLastBuild: true,
+                    keepAll: true,
+                    reportDir: 'frontend/coverage',
+                    reportFiles: 'index.html',
+                    reportName: 'Frontend Coverage Report'
+                ])
+            }
+        }
+        
+        stage('Security Scan') {
+            parallel {
+                stage('Backend Security') {
+                    steps {
+                        dir('backend') {
+                            sh 'mvn org.owasp:dependency-check-maven:check'
+                        }
+                    }
+                }
+                stage('Frontend Security') {
+                    steps {
+                        dir('frontend') {
+                            sh 'npm audit --audit-level=high'
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Code Quality Analysis') {
+            steps {
+                script {
+                    def scannerHome = tool 'SonarScanner'
+                    withSonarQubeEnv('SonarQube') {
+                        sh """
+                            ${scannerHome}/bin/sonar-scanner \
+                            -Dsonar.projectKey=weather-service \
+                            -Dsonar.sources=. \
+                            -Dsonar.host.url=${SONAR_HOST_URL} \
+                            -Dsonar.login=${SONAR_TOKEN} \
+                            -Dsonar.java.binaries=backend/target/classes \
+                            -Dsonar.junit.reportPaths=backend/target/surefire-reports \
+                            -Dsonar.jacoco.reportPaths=backend/target/site/jacoco/jacoco.xml
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Build Docker Images') {
+            parallel {
+                stage('Backend Docker') {
+                    steps {
+                        dir('backend') {
+                            script {
+                                def backendImage = docker.build("${DOCKER_REGISTRY}/weather-backend:${IMAGE_TAG}")
+                                docker.withRegistry("https://${DOCKER_REGISTRY}", 'docker-registry-credentials') {
+                                    backendImage.push()
+                                    backendImage.push('latest')
+                                }
+                            }
+                        }
+                    }
+                }
+                stage('Frontend Docker') {
+                    steps {
+                        dir('frontend') {
+                            script {
+                                def frontendImage = docker.build("${DOCKER_REGISTRY}/weather-frontend:${IMAGE_TAG}")
+                                docker.withRegistry("https://${DOCKER_REGISTRY}", 'docker-registry-credentials') {
+                                    frontendImage.push()
+                                    frontendImage.push('latest')
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Integration Tests') {
+            steps {
+                script {
+                    sh 'docker-compose -f docker-compose.test.yml up --build --abort-on-container-exit'
+                    sh 'docker-compose -f docker-compose.test.yml down'
+                }
+            }
+        }
+        
+        stage('Deploy to Staging') {
+            when {
+                branch 'develop'
+            }
+            steps {
+                script {
+                    sh """
+                        docker-compose -f docker-compose.staging.yml down
+                        WEATHER_API_KEY=${WEATHER_API_KEY} docker-compose -f docker-compose.staging.yml up -d
+                    """
+                }
+            }
+        }
+        
+        stage('Deploy to Production') {
+            when {
+                branch 'main'
+            }
+            steps {
+                input message: 'Deploy to Production?', ok: 'Deploy'
+                script {
+                    sh """
+                        docker-compose -f docker-compose.prod.yml down
+                        WEATHER_API_KEY=${WEATHER_API_KEY} docker-compose -f docker-compose.prod.yml up -d
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            cleanWs()
+            sh 'docker system prune -f'
+        }
+        success {
+            emailext (
+                subject: "✅ Pipeline Success: ${env.JOB_NAME} - ${env.BUILD_NUMBER}",
+                body: """
+                    Build completed successfully!
+                    
+                    Job: ${env.JOB_NAME}
+                    Build Number: ${env.BUILD_NUMBER}
+                    Git Commit: ${env.GIT_COMMIT_HASH}
+                    
+                    View build: ${env.BUILD_URL}
+                """,
+                to: "${env.CHANGE_AUTHOR_EMAIL}"
+            )
+        }
+        failure {
+            emailext (
+                subject: "❌ Pipeline Failed: ${env.JOB_NAME} - ${env.BUILD_NUMBER}",
+                body: """
+                    Build failed!
+                    
+                    Job: ${env.JOB_NAME}
+                    Build Number: ${env.BUILD_NUMBER}
+                    Git Commit: ${env.GIT_COMMIT_HASH}
+                    
+                    View build: ${env.BUILD_URL}
+                """,
+                to: "${env.CHANGE_AUTHOR_EMAIL}"
+            )
+        }
+    }
+}

@@ -1,0 +1,346 @@
+# OpenAPI Specification for Weather Service
+openapi: 3.0.3
+info:
+  title: Weather Forecast API
+  description: |
+    A comprehensive weather forecast microservice that provides 3-day weather predictions
+    with intelligent recommendations based on weather conditions.
+    
+    ## Features
+    - 3-day weather forecast for any city
+    - Smart recommendations (umbrella, sunscreen, wind warnings, storm alerts)
+    - Offline mode support with fallback data
+    - Caching for improved performance
+    - Real-time weather data from OpenWeatherMap API
+    
+    ## Business Rules
+    - **Temperature > 40°C**: "Use sunscreen lotion"
+    - **Rain predicted**: "Carry umbrella"
+    - **Wind > 10 mph**: "It's too windy, watch out!"
+    - **Thunderstorm**: "Don't step out! A Storm is brewing!" (overrides other recommendations)
+    
+    ## Error Handling
+    - City not found: Returns 404 with error message
+    - API unavailable: Returns cached or fallback data
+    - Invalid parameters: Returns 400 with validation errors
+  version: 1.0.0
+  contact:
+    name: Weather Service Team
+    email: weather-service@company.com
+    url: https://weather-service.company.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8080/api
+    description: Development server
+  - url: https://weather-service-staging.company.com/api
+    description: Staging server
+  - url: https://weather-service.company.com/api
+    description: Production server
+
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: Weather
+    description: Weather forecast operations
+  - name: Health
+    description: Service health monitoring
+
+paths:
+  /weather/forecast:
+    get:
+      tags:
+        - Weather
+      summary: Get 3-day weather forecast
+      description: |
+        Returns weather forecast for the next 3 days with smart recommendations.
+        
+        **Recommendations Logic:**
+        - High temperature (>40°C): Suggests sunscreen
+        - Rain: Suggests umbrella
+        - High winds (>10mph): Wind warning
+        - Thunderstorm: Storm warning (highest priority)
+      operationId: getWeatherForecast
+      parameters:
+        - name: city
+          in: query
+          required: true
+          description: Name of the city to get weather forecast for
+          schema:
+            type: string
+            minLength: 2
+            maxLength: 50
+            example: "London"
+        - name: offline
+          in: query
+          required: false
+          description: Enable offline mode to get fallback data
+          schema:
+            type: boolean
+            default: false
+            example: false
+      responses:
+        '200':
+          description: Weather forecast retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WeatherResponse'
+              examples:
+                london_forecast:
+                  summary: London weather forecast
+                  value:
+                    city: "London"
+                    forecasts:
+                      - date: "2024-01-15"
+                        highTemp: 22.5
+                        lowTemp: 15.3
+                        windSpeed: 8.2
+                        hasRain: false
+                        hasThunderstorm: false
+                        recommendations: []
+                      - date: "2024-01-16"
+                        highTemp: 42.1
+                        lowTemp: 28.7
+                        windSpeed: 12.5
+                        hasRain: true
+                        hasThunderstorm: false
+                        recommendations: ["Use sunscreen lotion", "Carry umbrella", "It's too windy, watch out!"]
+                      - date: "2024-01-17"
+                        highTemp: 18.9
+                        lowTemp: 12.1
+                        windSpeed: 15.8
+                        hasRain: false
+                        hasThunderstorm: true
+                        recommendations: ["Don't step out! A Storm is brewing!"]
+                    timestamp: "2024-01-15T10:30:00Z"
+                    offline: false
+                offline_example:
+                  summary: Offline mode response
+                  value:
+                    city: "Paris"
+                    forecasts:
+                      - date: "2024-01-15"
+                        highTemp: 25.0
+                        lowTemp: 18.0
+                        windSpeed: 6.5
+                        hasRain: false
+                        hasThunderstorm: false
+                        recommendations: []
+                    timestamp: "2024-01-15T10:30:00Z"
+                    offline: true
+        '400':
+          description: Bad request - Invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Invalid city parameter"
+                message: "City name must be between 2 and 50 characters"
+                timestamp: "2024-01-15T10:30:00Z"
+                status: 400
+        '404':
+          description: City not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "City not found"
+                message: "Unable to find weather data for the specified city"
+                timestamp: "2024-01-15T10:30:00Z"
+                status: 404
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Rate limit exceeded"
+                message: "Too many requests. Please try again later."
+                timestamp: "2024-01-15T10:30:00Z"
+                status: 429
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Internal server error"
+                message: "Weather service temporarily unavailable. Using fallback data."
+                timestamp: "2024-01-15T10:30:00Z"
+                status: 500
+
+  /weather/health:
+    get:
+      tags:
+        - Health
+      summary: Health check endpoint
+      description: Returns the health status of the weather service
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Weather service is running!"
+        '503':
+          description: Service unavailable
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: "Weather service is temporarily unavailable"
+
+components:
+  schemas:
+    WeatherResponse:
+      type: object
+      required:
+        - city
+        - forecasts
+        - timestamp
+        - offline
+      properties:
+        city:
+          type: string
+          description: Name of the city
+          example: "London"
+        forecasts:
+          type: array
+          description: Array of daily forecasts (maximum 3 days)
+          maxItems: 3
+          items:
+            $ref: '#/components/schemas/DailyForecast'
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp when the forecast was generated
+          example: "2024-01-15T10:30:00Z"
+        offline:
+          type: boolean
+          description: Indicates if the data is from offline/fallback source
+          example: false
+
+    DailyForecast:
+      type: object
+      required:
+        - date
+        - highTemp
+        - lowTemp
+        - windSpeed
+        - hasRain
+        - hasThunderstorm
+        - recommendations
+      properties:
+        date:
+          type: string
+          format: date
+          description: Date of the forecast
+          example: "2024-01-15"
+        highTemp:
+          type: number
+          format: double
+          description: High temperature in Celsius
+          minimum: -50
+          maximum: 60
+          example: 25.5
+        lowTemp:
+          type: number
+          format: double
+          description: Low temperature in Celsius
+          minimum: -50
+          maximum: 60
+          example: 15.3
+        windSpeed:
+          type: number
+          format: double
+          description: Wind speed in mph
+          minimum: 0
+          maximum: 200
+          example: 8.2
+        hasRain:
+          type: boolean
+          description: Indicates if rain is predicted
+          example: false
+        hasThunderstorm:
+          type: boolean
+          description: Indicates if thunderstorm is predicted
+          example: false
+        recommendations:
+          type: array
+          description: Array of weather-based recommendations
+          items:
+            type: string
+            enum:
+              - "Use sunscreen lotion"
+              - "Carry umbrella"
+              - "It's too windy, watch out!"
+              - "Don't step out! A Storm is brewing!"
+          example: ["Use sunscreen lotion", "Carry umbrella"]
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+        - message
+        - timestamp
+        - status
+      properties:
+        error:
+          type: string
+          description: Error type
+          example: "City not found"
+        message:
+          type: string
+          description: Detailed error message
+          example: "Unable to find weather data for the specified city"
+        timestamp:
+          type: string
+          format: date-time
+          description: Timestamp when the error occurred
+          example: "2024-01-15T10:30:00Z"
+        status:
+          type: integer
+          description: HTTP status code
+          example: 404
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authentication
+
+  examples:
+    HighTemperatureDay:
+      summary: High temperature day
+      description: Example of a day with high temperature requiring sunscreen
+      value:
+        date: "2024-01-15"
+        highTemp: 42.0
+        lowTemp: 30.0
+        windSpeed: 5.0
+        hasRain: false
+        hasThunderstorm: false
+        recommendations: ["Use sunscreen lotion"]
+    
+    StormyDay:
+      summary: Stormy day
+      description: Example of a day with thunderstorm (highest priority warning)
+      value:
+        date: "2024-01-16"
+        highTemp: 28.0
+        lowTemp: 20.0
+        windSpeed: 15.0
+        hasRain: true
+        hasThunderstorm: true
+        recommendations: ["Don't step out! A Storm is brewing!"]

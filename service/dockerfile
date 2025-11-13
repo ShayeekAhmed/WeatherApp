@@ -1,0 +1,40 @@
+FROM openjdk:21-jdk-slim
+
+LABEL maintainer="weather-service"
+LABEL version="1.0.0"
+LABEL description="Weather Microservice with Spring Boot"
+
+WORKDIR /app
+
+# Copy Maven wrapper and pom.xml first for better caching
+COPY mvnw .
+COPY .mvn .mvn
+COPY pom.xml .
+
+# Download dependencies
+RUN ./mvnw dependency:go-offline -B
+
+# Copy source code
+COPY src src
+
+# Build application
+RUN ./mvnw clean package -DskipTests
+
+# Create non-root user for security
+RUN groupadd -r weatheruser && useradd -r -g weatheruser weatheruser
+
+# Copy built jar
+COPY target/service-0.0.1-SNAPSHOT.jar app.jar
+
+# Change ownership
+RUN chown -R weatheruser:weatheruser /app
+
+USER weatheruser
+
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:8080/api/weather/health || exit 1
+
+ENTRYPOINT ["java", "-XX:+UseContainerSupport", "-XX:MaxRAMPercentage=75.0", "-jar", "app.jar"]

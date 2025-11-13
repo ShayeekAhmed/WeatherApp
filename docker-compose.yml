@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  weather-backend:
+    build:
+      context: ./service
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - WEATHER_API_KEY=${WEATHER_API_KEY}
+      - SPRING_PROFILES_ACTIVE=docker
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - weather-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/weather/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  weather-frontend:
+    build:
+      context: ./WeatherApplication
+      dockerfile: Dockerfile
+    ports:
+      - "4200:80"
+    depends_on:
+      - weather-backend
+    networks:
+      - weather-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - weather-network
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+
+networks:
+  weather-network:
+    driver: bridge
+
+volumes:
+  redis-data:
